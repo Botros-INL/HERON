@@ -100,6 +100,11 @@ class HERON(Base):
       img_path = os.path.join(self._input_dir, 'network.png')
       graph.save(img_path)
 
+    if not self._case.debug['enabled']:  # TODO do this every time?
+      graph = NetworkPlot(self._components)
+      img_path = os.path.join(self._input_dir, 'network.png')
+      graph.save(img_path)
+
   def create_raven_workflow(self, case=None):
     """
       Loads, modifies, and writes a RAVEN template workflow based on the Case.

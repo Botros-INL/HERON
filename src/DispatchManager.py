@@ -5,7 +5,6 @@
   Class for managing interactions with the Dispatchers.
 """
 
-
 import os
 import sys
 import pickle as pk
@@ -53,7 +52,7 @@ class DispatchRunner:
     self._components = None        # HERON components list
     self._sources = None           # HERON sources (placeholders) list
     self._override_time = None     # override for micro parameter
-    self._save_dispatch = False    # if True then maintain and return full dispatch record
+    self._save_dispatch = True    # if True then maintain and return full dispatch record
 
   #####################
   # API
@@ -79,6 +78,8 @@ class DispatchRunner:
     # derivative
     self._dispatcher = self._case.dispatcher
     if self._case.debug['enabled']:
+      self._save_dispatch = True
+    if not self._case.debug['enabled']:
       self._save_dispatch = True
 
   def extract_variables(self, raven, raven_dict):
@@ -289,6 +290,9 @@ class DispatchRunner:
     # enable additional cashflow outputs if in debug mode
     if self._case.debug['enabled']:
       final_settings.setParams({'Output': True})
+    if not self._case.debug['enabled']:
+      final_settings.setParams({'Output': True})
+
     active_index = {}
     dispatch_results = {}
     yearly_cluster_data = next(iter(all_structure['details'].values()))['clusters']
@@ -777,5 +781,3 @@ class DispatchManager(ExternalModelPluginBase):
       runner.override_time(override_time) # TODO setter
     dispatch, metrics = runner.run(raven_vars)
     runner.save_variables(raven, dispatch, metrics)
-
-
