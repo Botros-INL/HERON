@@ -4,13 +4,13 @@
 """
   Class for managing interactions with the Dispatchers.
 """
-
 import os
 import sys
 import pickle as pk
 from time import time as run_clock
 
 import numpy as np
+import csv
 from typing_extensions import final
 
 from . import _utils as hutils
@@ -52,7 +52,7 @@ class DispatchRunner:
     self._components = None        # HERON components list
     self._sources = None           # HERON sources (placeholders) list
     self._override_time = None     # override for micro parameter
-    self._save_dispatch = True    # if True then maintain and return full dispatch record
+    self._save_dispatch = False    # if True then maintain and return full dispatch record
 
   #####################
   # API
@@ -78,8 +78,6 @@ class DispatchRunner:
     # derivative
     self._dispatcher = self._case.dispatcher
     if self._case.debug['enabled']:
-      self._save_dispatch = True
-    if not self._case.debug['enabled']:
       self._save_dispatch = True
 
   def extract_variables(self, raven, raven_dict):
@@ -290,19 +288,26 @@ class DispatchRunner:
     # enable additional cashflow outputs if in debug mode
     if self._case.debug['enabled']:
       final_settings.setParams({'Output': True})
-    if not self._case.debug['enabled']:
-      final_settings.setParams({'Output': True})
-
     active_index = {}
     dispatch_results = {}
     yearly_cluster_data = next(iter(all_structure['details'].values()))['clusters']
+
+    # Initiate significant lists
+    all_clusters_all_years_list_of_dicts = [] # collect all component activity data for all years and clusters here
+    tot_activity_over_clusters_years = []
+    list_of_years = []
     for year in range(project_life):
       interp_year = interp_years[year] if len(interp_years) > 1 else (interp_years[0] + year)
+      list_of_years.append(interp_year )
       if self._save_dispatch:
         dispatch_results[interp_year] = {}
       # If the ARMA is interpolated, we need to track which year we're in.
       # Otherwise, use just the nominal first year.
       active_index['year'] = year if len(range(*structure['interpolated'])) > 1 else 0 # FIXME MacroID not year
+
+      all_clusters_year_list_of_dicts = [] # collect all component activity data for all clusters for one year here
+      tot_activity_series_dict_list = []
+
       for s, seg in enumerate(segs):
         multiplicity = self._update_meta_for_segment(meta, seg, interp_year, yearly_cluster_data,
                                                      interp_years, active_index, all_structure)
@@ -313,9 +318,105 @@ class DispatchRunner:
         # build evaluation cash flows
         self._segment_cashflow(meta, s, seg, year, dispatch, multiplicity,
                                project_life, interp_years, all_structure, final_components)
+
+        cluster_year_list_of_dicts = [] # collect all component activity data for for one cluster for one year here
+
+        for step_index in range(len(dispatch._times)):
+          Dict = {}
+          variable_name_list=[]
+
+          for k in (dispatch._data.keys()):
+            var_name = k.replace("_"+k.split("_")[-1], "");# variable name
+            for ky in (dispatch._resources.keys()):
+              if ky.name == var_name:
+                for index in range (len(dispatch._data[k])):
+                  res_name = (list(((dispatch._resources).get(ky)).keys()))[index]
+                  variable_name = str(k)+ " : "+res_name
+                  variable_name_list.append(variable_name)
+                  Dict[variable_name] = (dispatch._data[k])[index][step_index]
+
+                  Dict['Year']= interp_year
+                  Dict['Time'] = dispatch._times[step_index]
+                  Dict['Cluster'] = seg
+                  Dict["Days per year per cluster"] = multiplicity
+          cluster_year_list_of_dicts.append(Dict)
+        all_clusters_year_list_of_dicts.append(cluster_year_list_of_dicts)
+
+        activity_series_dict = {}
+        tot_activity_series_dict = {}
+        for variable in variable_name_list:
+          activity_series_dict[variable] = [ sub[variable] for sub in cluster_year_list_of_dicts]
+          tot_activity = 0
+          for h in range(len(activity_series_dict[variable])-1):
+            timestep_tot_activity = 0.5*(activity_series_dict[variable][h] + activity_series_dict[variable][h+1]) * (dispatch._times[h+1]- dispatch._times[h])
+            tot_activity = tot_activity + timestep_tot_activity
+
+          tot_activity_series_dict[variable] = tot_activity
+          tot_activity_series_dict["Year"] = interp_year
+          tot_activity_series_dict["Cluster"] = seg
+          tot_activity_series_dict["Days per year per cluster"] = multiplicity
+        tot_activity_series_dict_list.append(tot_activity_series_dict)
+      tot_activity_over_clusters_years.append(tot_activity_series_dict_list)
+
+      all_clusters_all_years_list_of_dicts.append(all_clusters_year_list_of_dicts)
+      dispatch_result = [element for nestedlist in all_clusters_all_years_list_of_dicts for element in nestedlist]
+      dispatch_final_result = [element for nestedlist in dispatch_result for element in nestedlist]
+
+    tot_activity_over_clusters_years_result = [element for nestedlist in tot_activity_over_clusters_years for element in nestedlist]
+
+    tot_activity_per_year_list = []
+    for y in list_of_years:
+      keys = ["Year"]+variable_name_list
+      values =[y] + [0] * len(variable_name_list)
+      tot_activity_per_year = dict(zip(keys,values))
+      for d in tot_activity_over_clusters_years_result:
+        if d["Year"] == y:
+          for v in variable_name_list:
+            tot_activity_per_year[v] = tot_activity_per_year[v] + d[v] * d['Days per year per cluster']
+      tot_activity_per_year_list.append(tot_activity_per_year)
+
+    keys = variable_name_list
+    values = [0] * len(variable_name_list)
+    tot_activity_over_all_years = dict(zip(keys,values))
+    for v in variable_name_list:
+      for d in tot_activity_per_year_list:
+        tot_activity_over_all_years[v] = tot_activity_over_all_years[v] + d[v]
+
+    # Activity per cluster per year
+    field_list =  ["Year", "Cluster", "Days per year per cluster","Time"] + variable_name_list
+    dispatch_out_file = "activity-1 for one sample.csv"
+    with open(dispatch_out_file, 'w', newline='') as file:
+      writer = csv.DictWriter(file, fieldnames = field_list)
+      writer.writeheader()
+      writer.writerows(dispatch_final_result)
+
+    # total activity per cluster per year
+    tot_activity_field_list =  ["Year", "Cluster", "Days per year per cluster"]+ variable_name_list
+    tot_activity_out_file = "activity-2 (total activity : activity * time interval) for one sample.csv"
+    with open(tot_activity_out_file, 'w', newline='') as file:
+      writer = csv.DictWriter(file, fieldnames = tot_activity_field_list)
+      writer.writeheader()
+      writer.writerows(tot_activity_over_clusters_years_result)
+
+    # total activity (over all clusters) per year
+    tot_activity_per_year_keys = ["Year"] + variable_name_list
+    tot_activity_per_year_file = "activity-3 (total activity : activity * time interval) per year for one sample.csv"
+    with open(tot_activity_per_year_file, 'w', newline='') as file:
+      writer = csv.DictWriter(file, fieldnames = tot_activity_per_year_keys)
+      writer.writeheader()
+      writer.writerows(tot_activity_per_year_list)
+
+    # # Final total activity (over all clusters and years)
+    final_activity_keys =  variable_name_list
+    final_activit_file = "activity-4 (total activity : activity * time interval) over all years for one sample.csv.csv"
+    with open(final_activit_file, 'w', newline='') as file:
+      writer = csv.DictWriter(file, fieldnames = final_activity_keys )
+      writer.writeheader()
+      writer.writerows([tot_activity_over_all_years])
     # TEAL, take it away.
     cf_metrics = self._final_cashflow(meta, final_components, final_settings)
     return dispatch_results, cf_metrics
+
 
   def _build_econ_objects(self, heron_case, heron_components, project_life):
     """
